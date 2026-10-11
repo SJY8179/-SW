@@ -14,26 +14,29 @@
   - SDK 터미널이나 minicom 등 같은 포트를 연 다른 프로그램을 먼저 닫는다.
     두 프로그램이 같은 포트를 읽으면 줄이 나뉘어 둘 다 일부만 받는다.
   - 받은 내용은 화면에도 그대로 보여 준다.
+  - 이 창에 글자를 치고 Enter를 누르면 그 글자를 보드로 보낸다(Enter 자체는 보내지 않음).
+    보드를 다시 올렸을 때 "Press 'X'..." 에 X 를 보내려고 SDK 터미널로 바꿀 필요가 없다.
   - 같은 파일에 이어 쓰므로 실험 하루 동안 한 파일로 받아도 된다.
 """
 import os
 import sys
+import threading
 import time
 
 
 def open_port(dev, baud):
-    """읽기 함수(read(n) -> bytes)를 돌려준다."""
+    """(read(n) -> bytes, write(bytes)) 를 돌려준다."""
     if os.name == "nt" or dev.upper().startswith("COM"):
         try:
             import serial  # pyserial
         except ImportError:
             sys.exit("pyserial이 필요합니다: pip install pyserial")
         port = serial.Serial(dev, int(baud), timeout=0.5)
-        return port.read
+        return port.read, port.write
     import subprocess
     subprocess.run(["stty", "-F", dev, baud, "raw", "-echo", "-echoe", "-echok", "-ixon"], check=True)
-    src = open(dev, "rb", buffering=0)
-    return src.read
+    src = open(dev, "r+b", buffering=0)
+    return src.read, src.write
 
 
 def main():
@@ -41,7 +44,15 @@ def main():
         sys.exit(__doc__)
     dev, out = sys.argv[1], sys.argv[2]
     baud = os.environ.get("BAUD", "115200")
-    read = open_port(dev, baud)
+    read, write = open_port(dev, baud)
+
+    def forward_keys():
+        for line in sys.stdin:
+            keys = line.rstrip("\r\n")
+            if keys:
+                write(keys.encode())
+
+    threading.Thread(target=forward_keys, daemon=True).start()
 
     buf = b""
     with open(out, "a", buffering=1, encoding="utf-8") as dst:
