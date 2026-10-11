@@ -3,23 +3,40 @@
 보드의 UART 출력을 받으면서 줄마다 받은 시각(epoch ns)을 붙여 파일에 저장한다.
 
 이 시각으로 호스트 PC에서 기록한 이벤트(측정 시작·끝, cycle 끝)와 UART의 EXPSTAT 줄을
-맞춘다. 그러려면 UART를 받는 PC와 실험을 돌리는 호스트 PC의 시계가 맞아 있어야 한다
-(둘 다 `timedatectl` 에서 "System clock synchronized: yes").
+맞춘다. 그러려면 UART를 받는 PC와 실험을 돌리는 호스트 PC의 시계가 맞아 있어야 한다.
 
 사용법 (UART 케이블이 연결된 PC에서):
-  sudo python3 uart_capture.py /dev/ttyUSB1 uart.log
+  리눅스:  sudo python3 uart_capture.py /dev/ttyUSB1 uart.log
+  윈도우:  python uart_capture.py COM3 uart.log      (먼저 pip install pyserial)
   끝낼 때 Ctrl+C
 
 주의
   - SDK 터미널이나 minicom 등 같은 포트를 연 다른 프로그램을 먼저 닫는다.
     두 프로그램이 같은 포트를 읽으면 줄이 나뉘어 둘 다 일부만 받는다.
   - 받은 내용은 화면에도 그대로 보여 준다.
+  - 이 창에 글자를 치고 Enter를 누르면 그 글자를 보드로 보낸다(Enter 자체는 보내지 않음).
+    보드를 다시 올렸을 때 "Press 'X'..." 에 X 를 보내려고 SDK 터미널로 바꿀 필요가 없다.
   - 같은 파일에 이어 쓰므로 실험 하루 동안 한 파일로 받아도 된다.
 """
 import os
-import subprocess
 import sys
+import threading
 import time
+
+
+def open_port(dev, baud):
+    """(read(n) -> bytes, write(bytes)) 를 돌려준다."""
+    if os.name == "nt" or dev.upper().startswith("COM"):
+        try:
+            import serial  # pyserial
+        except ImportError:
+            sys.exit("pyserial이 필요합니다: pip install pyserial")
+        port = serial.Serial(dev, int(baud), timeout=0.5)
+        return port.read, port.write
+    import subprocess
+    subprocess.run(["stty", "-F", dev, baud, "raw", "-echo", "-echoe", "-echok", "-ixon"], check=True)
+    src = open(dev, "r+b", buffering=0)
+    return src.read, src.write
 
 
 def main():
@@ -27,14 +44,22 @@ def main():
         sys.exit(__doc__)
     dev, out = sys.argv[1], sys.argv[2]
     baud = os.environ.get("BAUD", "115200")
-    subprocess.run(["stty", "-F", dev, baud, "raw", "-echo", "-echoe", "-echok", "-ixon"], check=True)
+    read, write = open_port(dev, baud)
+
+    def forward_keys():
+        for line in sys.stdin:
+            keys = line.rstrip("\r\n")
+            if keys:
+                write(keys.encode())
+
+    threading.Thread(target=forward_keys, daemon=True).start()
 
     buf = b""
-    with open(dev, "rb", buffering=0) as src, open(out, "a", buffering=1) as dst:
+    with open(out, "a", buffering=1, encoding="utf-8") as dst:
         dst.write(f"{time.time_ns()}\t# uart_capture start dev={dev} baud={baud}\n")
         try:
             while True:
-                chunk = src.read(256)
+                chunk = read(256)
                 if not chunk:
                     continue
                 buf += chunk
